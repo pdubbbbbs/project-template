@@ -1,0 +1,158 @@
+name: Quality Checks
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  structure-check:
+    name: File Structure Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Check for required directories
+        run: |
+          # Define required directories based on project type
+          REQUIRED_DIRS=(".github/workflows" "docs")
+          
+          # Check if package.json exists (Node.js project)
+          if [ -f "package.json" ]; then
+            REQUIRED_DIRS+=("src" "tests" "public")
+          fi
+          
+          # Check if requirements.txt exists (Python project)
+          if [ -f "requirements.txt" ]; then
+            REQUIRED_DIRS+=("src" "tests")
+          fi
+          
+          # Validate directories exist
+          for dir in "${REQUIRED_DIRS[@]}"; do
+            if [ ! -d "$dir" ]; then
+              echo "::error::Required directory '$dir' is missing. Please create it."
+              exit 1
+            fi
+          done
+          
+          echo "All required directories are present."
+      
+      - name: Check for required files
+        run: |
+          # Define required files
+          REQUIRED_FILES=("README.md" ".github/PULL_REQUEST_TEMPLATE.md")
+          
+          # Check each required file
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "::error::Required file '$file' is missing. Please create it."
+              exit 1
+            fi
+          done
+          
+          echo "All required files are present."
+
+  pr-checks:
+    name: Pull Request Quality Checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: Check PR description length
+        run: |
+          PR_BODY="${{ github.event.pull_request.body }}"
+          MIN_LENGTH=100
+          
+          if [ ${#PR_BODY} -lt $MIN_LENGTH ]; then
+            echo "::error::Pull request description is too short. Please provide a detailed description (at least $MIN_LENGTH characters)."
+            exit 1
+          fi
+          
+          echo "Pull request description meets minimum requirements."
+          
+      - name: Check for direct commits to main
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          echo "::error::Direct commits to main branch are not allowed. Please create a pull request instead."
+          exit 1
+
+  documentation-check:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Check README completeness
+        run: |
+          README_CONTENT=$(cat README.md)
+          MIN_LENGTH=500
+          
+          if [ ${#README_CONTENT} -lt $MIN_LENGTH ]; then
+            echo "::error::README.md is too short. Please provide comprehensive documentation."
+            exit 1
+          fi
+          
+          # Check for required sections in README
+          REQUIRED_SECTIONS=("# " "## Installation" "## Usage")
+          
+          for section in "${REQUIRED_SECTIONS[@]}"; do
+            if ! grep -q "$section" README.md; then
+              echo "::error::README.md is missing required section: $section"
+              exit 1
+            fi
+          done
+          
+          echo "README.md meets minimum requirements."
+      
+      - name: Check for API documentation
+        run: |
+          if [ -d "src/api" ] || [ -d "api" ]; then
+            if [ ! -d "docs/api" ] && [ ! -f "docs/api.md" ]; then
+              echo "::warning::API documentation seems to be missing. Consider adding API documentation."
+            fi
+          fi
+
+  test-check:
+    name: Test Coverage Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Check for test files
+        run: |
+          # Check if this is a code project that should have tests
+          if [ -f "package.json" ] || [ -f "requirements.txt" ] || [ -f "go.mod" ]; then
+            # Count test files
+            TEST_FILES=$(find . -type f -name "*test*" -o -name "*spec*" | wc -l)
+            
+            if [ "$TEST_FILES" -lt 1 ]; then
+              echo "::error::No test files found. Please add tests to your project."
+              exit 1
+            fi
+            
+            echo "Found $TEST_FILES test files."
+          else
+            echo "Not a standard code project, skipping test check."
+          fi
+
+  # This job depends on all other checks passing
+  quality-gate:
+    name: Quality Gate
+    needs: [structure-check, documentation-check, test-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if all jobs succeeded
+        run: |
+          if [[ "${{ needs.structure-check.result }}" != "success" || \
+                "${{ needs.documentation-check.result }}" != "success" || \
+                "${{ needs.test-check.result }}" != "success" ]]; then
+            echo "::error::One or more quality checks failed. Please fix the issues before merging."
+            exit 1
+          fi
+          
+          echo "All quality checks passed!"
